@@ -1,16 +1,15 @@
 "use strict";
 
-const csv = require("csvtojson");
 const fs = require("fs");
-const fetch = require("node-fetch");
-const yargs = require("yargs/yargs");
-const {CookieMap} = require("cookiefile");
-const {hideBin} = require("yargs/helpers");
+
+const util = require("./util");
+
+const AUTH_MODES = ["zoom-user", "berkeley-user"];
 
 async function run() {
   let options = yargs(hideBin(process.argv))
-    .option("input", {alias: "i", default: "roster.csv", describe: "Input CSV (requires Email column)"})
-    .option("output", {alias: "o", default: "stdout", describe: "Output CSV (creates Email, Meeting columns)"})
+    .option("input", {alias: "i", default: "roster.csv", describe: "Input CSV (requires column: Email)"})
+    .option("output", {alias: "o", default: "meetings.csv", describe: "Output CSV (creates columns: Email, Meeting) ('stdout' for stdout)"})
     .option("cookies", {default: "cookies.txt", describe: "Netscape cookies.txt file"})
     .option("topic", {alias: "t", default: "Meeting (@)", describe: "Name of meeting (@ for email)"})
     .option("description", {describe: "Description of meeting (@ for email)"})
@@ -18,34 +17,56 @@ async function run() {
     .option("duration", {alias: "d", number: true, default: 0, describe: "Duration of meeting, in minutes (multiple of 15). If 0, meeting will not have a set date/time"})
     .option("timezone", {default: Intl.DateTimeFormat().resolvedOptions().timeZone, describe: "Timezone of meeting"})
     .option("cohost", {alias: "c", boolean: true, describe: "Add emails as co-hosts"})
+    .option("audioType", {default: "both", choices: ["telephony", "voip", "both"], describe: "Allowed audio types for meeting"})
+    .option("authMode", {default: "zoom-user", choices: AUTH_MODES, describe: "Auth enforcement mode for meeting"})
+    .option("recordMode", {default: "cloud", choices: ["none", "local", "cloud"], describe: "Automatic recording mode for meeting"})
+    .option("interval", {default: 2000, describe: "Interval (ms) between requests"})
     .option("csrfToken", {hidden: true})
     .strict()
     .version(false)
     .argv;
 
-  options.cookieString = new CookieMap(options.cookies).toRequestHeader().replace("Cookie: ", "");
+  options.cookieString = util.getCookieString(options.cookies);
 
   let input = null;
   try {
-    input = (await csv().fromFile(options.input)).map((_row, i) => {
-      let email = _row["Email"];
-      if(!email) throw new Error(`Invalid email found (row: ${i}, email: ${JSON.stringify(email)})`);
-      let row = Object.fromEntries(Object.entries(_row).map(([k, v]) => [k.toLowerCase(), v]));
+    input = await util.readInputCSV(options.input, (row, i) => {
+      if(!row.email) throw new Error(`Invalid email found (row: ${i}, email: ${JSON.stringify(row.email)})`);
       if(row.duration) row.duration = +row.duration;
       if(row.cohost) row.cohost = row.cohost.toLowerCase() === "true";
-      return row;
+      if(row.authMode) row.authMode = +row.authMode;
     });
   } catch(err) {
-    console.error(`Couldn't parse ${options.input}: ${err.stack}`)
+    console.error(`[generate] couldn't parse ${options.input}: ${err.stack}`)
     return;
   }
 
   let outStream = process.stdout;
-  if(options.output && options.output !== "stdout") outStream = fs.createWriteStream(options.output);
-  outStream.write("Email,Meeting\n");
+  let outputEmails = null;
+  let isOutputStdout = true;
+  if(options.output && options.output !== "stdout") {
+    isOutputStdout = false;
+    try {
+      await fs.promises.access(options.output);
+      let output = await util.readInputCSV(options.output);
+      outputEmails = new Set(output.map((row) => row.email).filter((email) => email));
+      outStream = fs.createWriteStream(options.output, {flags: "a"});
+    } catch(err) {
+      if(err.code !== "ENOENT") throw err;
+      outStream = fs.createWriteStream(options.output, {flags: "a"});
+    }
+  }
+  if(outputEmails) {
+    console.error("[generate] appending to existing output file");
+  } else {
+    if(!isOutputStdout) console.error("[generate] creating new output file");
+    outStream.write("Email,Meeting\n");
+  }
 
-  for(let row of input) {
+  for(let i = 0; i < input.length; i++) {
+    let row = input[i];
     let email = row.email;
+    if(outputEmails && outputEmails.has(email)) continue;
     try {
       let meetingOptions = {
         ...options,
@@ -54,21 +75,25 @@ async function run() {
       };
       if(meetingOptions.topic) meetingOptions.topic = meetingOptions.topic.replace("@", email);
       if(meetingOptions.description) meetingOptions.description = meetingOptions.description.replace("@", email);
+      if(meetingOptions.authMode) {
+        meetingOptions.enforceAuthMode = AUTH_MODES.indexOf(meetingOptions.authMode);
+        if(meetingOptions.enforceAuthMode === -1) throw new Error(`Unknown auth mode: ${meetingOptions.authMode}`);
+      }
+      if(meetingOptions.recordMode) meetingOptions.autoRecordMode = meetingOptions.recordMode;
       let meeting = await createMeeting(meetingOptions);
-      console.error(`[${email}] created meeting (${meeting.link})`);
+      if(!outStream.isTTY) console.error(`[${email}] created meeting (${meeting.link})`);
       outStream.write(`${email},${meeting.link}\n`);
     } catch(err) {
       console.error(`[${email}] failed to create meeting: ${err.stack}`);
+      outStream.write(`${email},ERROR\n`);
     }
+    if(i < input.length - 1) await util.sleep(options.interval);
   }
 }
 run().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-
-const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.131 Safari/537.36";
-const DEFAULT_ZOOM_ORIGIN = "https://berkeley.zoom.us";
 
 async function createMeeting(options) {
   let {
@@ -91,23 +116,16 @@ async function createMeeting(options) {
     enableWaitingRoom,
     dialInOptions,
     authOptions,
-    enforceSignInMode,
+    enforceAuthMode,
     breakoutRoomOptions,
     requireRegistration,
     usePersonalMeetingID,
     enableMuteUponEntry,
     regionAllowList,
     regionDenyList,
-
-    cookieString,
-    csrfToken,
-    userAgent,
-    zoomOrigin,
   } = {
     password: Math.floor(Math.random() * 1000000).toString().padStart(6, "0"),
     altHosts: [],
-    autoRecordMode: "cloud", // none, local, cloud
-    audioType: "both", // telephony, voip, both
 
     allowJoinBeforeHost: true,
     allowJoinBeforeHostBeforeMeeting: true,
@@ -118,7 +136,7 @@ async function createMeeting(options) {
     enableWaitingRoom: false, // 0, 1
     dialInOptions: null,
     authOptions: null,
-    enforceSignInMode: 0, // 0 (any Zoom user), 1 (Berkeley Zoom user)
+    enforceAuthMode: 0, // 0 (any Zoom user), 1 (Berkeley Zoom user)
     breakoutRoomOptions: null,
     requireRegistration: false,
     usePersonalMeetingID: false,
@@ -126,12 +144,16 @@ async function createMeeting(options) {
     regionAllowList: [],
     regionDenyList: [],
 
-    csrfToken: null,
-    userAgent: DEFAULT_USER_AGENT,
-    zoomOrigin: DEFAULT_ZOOM_ORIGIN,
-
     ...options,
   };
+
+  if(options.enforceAuthMode === 1 && !authOptions) {
+    authOptions = {
+      "option_enforce_signed_in": options.enforceAuthMode,
+      "authDomain": "berkeley.edu,*.berkeley.edu",
+      "selectAuthName": "UC Berkeley users only",
+    };
+  }
 
   if(when === null) when = new Date();
   if(!(when instanceof Date)) {
@@ -152,32 +174,9 @@ async function createMeeting(options) {
     timeZone: options.timezone,
   }).split(" ");
 
-  let baseHeaders = {
-    "User-Agent": userAgent,
-    "Referer": `${zoomOrigin}/meeting/schedule`,
-    "Origin": zoomOrigin,
-    "Cookie": cookieString,
-  };
-
-  if(!csrfToken) {
-    let res = await fetch(`${zoomOrigin}/csrf_js`, {
-      method: "POST",
-      headers: {
-        ...baseHeaders,
-        "FETCH-CSRF-TOKEN": "1",
-      },
-      body: "",
-    });
-    if(!res.ok) throw new Error(`HTTP ${res.status} (${res.method} ${res.url})`);
-    let data = await res.text();
-    let csrfTokenMatch = data.match(/^ZOOM-CSRFTOKEN:([0-9A-Za-z_-]+)$/);
-    if(!csrfTokenMatch) throw new Error("Couldn't get CSRF token");
-    csrfToken = csrfTokenMatch[1];
-  }
-
   let body = new URLSearchParams();
   body.append("topic", topic);
-  body.append("agenda", description);
+  if(description) body.append("agenda", description);
   body.append("timezone", timezone);
   body.append("start_date", startDate);
   body.append("start_time", startTime);
@@ -203,7 +202,7 @@ async function createMeeting(options) {
   body.append("option_waiting_room", enableWaitingRoom ? "1" : "0");
   if(dialInOptions) body.append("global_dialin_countries", JSON.stringify(dialInOptions));
   if(authOptions) body.append("authOptionsJson", JSON.stringify(authOptions));
-  body.append("option_enforce_signed_in", enforceSignInMode);
+  body.append("option_enforce_signed_in", enforceAuthMode);
   body.append("option_bre_room", !!breakoutRoomOptions);
   if(breakoutRoomOptions) body.append("breout_room_info", JSON.stringify(breakoutRoomOptions));
   body.append("autorec", autoRecordMode);
@@ -214,30 +213,17 @@ async function createMeeting(options) {
   body.append("enable_join_meeting_region", !!((regionAllowList && regionAllowList.length) || (regionDenyList && regionDenyList.length)));
   if(regionAllowList) body.append("white_region_list", JSON.stringify(regionAllowList));
   if(regionDenyList) body.append("black_region_list", JSON.stringify(regionDenyList));
-  let res = await fetch(`${zoomOrigin}/meeting/save`, {
-    method: "POST",
-    headers: {
-      ...baseHeaders,
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With": "XMLHttpRequest, XMLHttpRequest, OWASP CSRFGuard Project",
-      "ZOOM-CSRFTOKEN": csrfToken,
-    },
+  let res = await util.request("/meeting/save", options, {
+    zoom: options,
+    csrfToken: options.csrfToken || true,
     body: body.toString(),
   });
-  if(!res.ok) throw new Error(`HTTP ${res.status} (${res.method} ${res.url})`);
-  let data = await res.json();
-  if(!data.status || data.errorCode !== 0 || data.errorMessage) {
-    if(data.errorCode === 201) throw new Error(`Session expired, log in and update your cookies`);
-    throw new Error(`Error creating meeting: ${data.errorMessage} (code: ${data.errorCode})`);
-  }
+  let data = await util.getJSON(res);
   let meetingID = data.result;
 
-  res = await fetch(`${zoomOrigin}/meeting/${meetingID}`, {
-    headers: baseHeaders,
-  });
-  if(!res.ok) throw new Error(`HTTP ${res.status} (${res.method} ${res.url})`);
+  res = await util.request(`/meeting/${meetingID}`, options);
   data = await res.text();
-  let meetingLinkMatch = data.match(new RegExp(`href="(${zoomOrigin}/j/${meetingID}[^"]*)"`));
+  let meetingLinkMatch = data.match(new RegExp(`href="(.+?/j/${meetingID}[^"]*)"`));
   if(!meetingLinkMatch) throw new Error("Could not find meeting link on meeting page");
   let meetingLink = meetingLinkMatch[1];
   return {

@@ -12,7 +12,7 @@ Run `npm install` to install dependencies.
 
 - `cd` to this folder
 - Go to [https://berkeley.zoom.us](https://berkeley.zoom.us), log in, and export your
-cookies to Netscape-formatted `cookies.txt`
+cookies to `cookies.txt` in Netscape format
   - There are extensions to make this easier: ["cookies.txt" for Firefox](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/), ["Get cookies.txt" for Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt/bgaddhkoddajcdgocldbbfleckgcbcid)
   - Note that Zoom auth tokens are rather short-lived
 - Create a CSV (default: `roster.csv`). Columns:
@@ -22,22 +22,30 @@ cookies to Netscape-formatted `cookies.txt`
   - `When` (optional): overrides `--when` for this meeting only
   - `Duration` (optional): overrides `--duration` for this meeting only
   - `Timezone` (optional): overrides `--timezone` for this meeting only
-- Run `node generate` with any desired arguments. An output CSV will be created, with `Email` and `Meeting` columns
+- Run `node generate` with any desired arguments. An output CSV will be created, with `Email` and `Meeting` columns. Entries will be appended if the file already exists
+  - A row will have `Meeting`: `ERROR` if meeting generation failed for that user
 
 ```
 Options:
       --help         Show help                                         [boolean]
-  -i, --input        Input CSV (requires Email column)   [default: "roster.csv"]
-  -o, --output       Output CSV (creates Email, Meeting columns)
-                                                             [default: "stdout"]
+  -i, --input        Input CSV (requires column: Email)  [default: "roster.csv"]
+  -o, --output       Output CSV (creates columns: Email, Meeting) ('stdout' for
+                     stdout)                           [default: "meetings.csv"]
       --cookies      Netscape cookies.txt file          [default: "cookies.txt"]
   -t, --topic        Name of meeting (@ for email)      [default: "Meeting (@)"]
       --description  Description of meeting (@ for email)
   -w, --when         Date/time of meeting, as ISO timestamp      [default: null]
   -d, --duration     Duration of meeting, in minutes (multiple of 15). If 0,
                      meeting will not have a set date/time [number] [default: 0]
-      --timezone     Timezone of meeting                        [default: "UTC"]
+      --timezone     Timezone of meeting              [default: system timezone]
   -c, --cohost       Add emails as co-hosts                            [boolean]
+      --audioType    Allowed audio types for meeting
+                        [choices: "telephony", "voip", "both"] [default: "both"]
+      --authMode     Auth enforcement mode for meeting
+                  [choices: "zoom-user", "berkeley-user"] [default: "zoom-user"]
+      --recordMode   Automatic recording mode for meeting
+                          [choices: "none", "local", "cloud"] [default: "cloud"]
+      --interval     Interval (ms) between requests              [default: 2000]
 ```
 
 ### Notes
@@ -45,11 +53,20 @@ Options:
 - `when` should be an ISO timezone-aware timestamp (e.g. `2021-09-28T03:00:00-07:00`)
 - If `duration` is `0`, `when` is ignored and the meeting does not have a set start/end time
 - Zoom only accepts certain `duration`s (it seems to be multiples of 15)
+- Running concurrent instances with the same output CSV is not supported
 
 ### Example
 
 ```sh
 node generate -o links.csv -t "[CS 61C] Midterm 8: @" -w 2021-09-28T03:00:00-07:00 -d 60 -c
+```
+
+## Bonus Usage: Un-generate (delete) meetings
+
+You can bulk-delete meetings with `ungenerate.js`. It takes an input CSV with a `Meeting` column (e.g. the output CSV from `generate.js`).
+
+```sh
+node ungenerate -i links.csv
 ```
 
 ## Recommendations
