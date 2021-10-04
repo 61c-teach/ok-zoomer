@@ -7,7 +7,7 @@ const util = require("./util");
 const AUTH_MODES = ["zoom-user", "berkeley-user"];
 
 async function run() {
-  let options = yargs(hideBin(process.argv))
+  let options = util.cli()
     .option("input", {alias: "i", default: "roster.csv", describe: "Input CSV (requires column: Email)"})
     .option("output", {alias: "o", default: "meetings.csv", describe: "Output CSV (creates columns: Email, Meeting) ('stdout' for stdout)"})
     .option("cookies", {default: "cookies.txt", describe: "Netscape cookies.txt file"})
@@ -15,7 +15,7 @@ async function run() {
     .option("description", {describe: "Description of meeting (@ for email)"})
     .option("when", {alias: "w", default: null, describe: "Date/time of meeting, as ISO timestamp"})
     .option("duration", {alias: "d", number: true, default: 0, describe: "Duration of meeting, in minutes (multiple of 15). If 0, meeting will not have a set date/time"})
-    .option("timezone", {default: Intl.DateTimeFormat().resolvedOptions().timeZone, describe: "Timezone of meeting"})
+    .option("timeZone", {default: Intl.DateTimeFormat().resolvedOptions().timeZone, describe: "Timezone of meeting"}) // TODO custom help text
     .option("cohost", {alias: "c", boolean: true, describe: "Add emails as co-hosts"})
     .option("audioType", {default: "both", choices: ["telephony", "voip", "both"], describe: "Allowed audio types for meeting"})
     .option("authMode", {default: "zoom-user", choices: AUTH_MODES, describe: "Auth enforcement mode for meeting"})
@@ -66,7 +66,10 @@ async function run() {
   for(let i = 0; i < input.length; i++) {
     let row = input[i];
     let email = row.email;
-    if(outputEmails && outputEmails.has(email)) continue;
+    if(outputEmails && outputEmails.has(email)) {
+      console.error(`[${email}] found in output, skipping...`);
+      continue;
+    }
     try {
       let meetingOptions = {
         ...options,
@@ -100,52 +103,30 @@ async function createMeeting(options) {
     topic,
     description,
     when,
-    timezone,
+    timeZone,
     duration,
-    password,
-    altHosts,
-    autoRecordMode,
-    audioType,
+    password = Math.floor(Math.random() * 1000000).toString().padStart(6, "0"),
+    altHosts = [],
+    autoRecordMode = "none",
+    audioType = "both",
 
-    allowJoinBeforeHost,
-    allowJoinBeforeHostBeforeMeeting,
-    hostVideo,
-    participantVideo,
-    allowAltHostToEditPoll,
-    enablePAC,
-    enableWaitingRoom,
-    dialInOptions,
-    authOptions,
-    enforceAuthMode,
-    breakoutRoomOptions,
-    requireRegistration,
-    usePersonalMeetingID,
-    enableMuteUponEntry,
-    regionAllowList,
-    regionDenyList,
-  } = {
-    password: Math.floor(Math.random() * 1000000).toString().padStart(6, "0"),
-    altHosts: [],
-
-    allowJoinBeforeHost: true,
-    allowJoinBeforeHostBeforeMeeting: true,
-    hostVideo: true, // on, off
-    participantVideo: true, // on, off
-    allowAltHostToEditPoll: false,
-    enablePAC: false, // ???
-    enableWaitingRoom: false, // 0, 1
-    dialInOptions: null,
-    authOptions: null,
-    enforceAuthMode: 0, // 0 (any Zoom user), 1 (Berkeley Zoom user)
-    breakoutRoomOptions: null,
-    requireRegistration: false,
-    usePersonalMeetingID: false,
-    enableMuteUponEntry: false, // 0, 1
-    regionAllowList: [],
-    regionDenyList: [],
-
-    ...options,
-  };
+    allowJoinBeforeHost = true,
+    allowJoinBeforeHostBeforeMeeting = true,
+    hostVideo = true, // on, off
+    participantVideo = true, // on, off
+    allowAltHostToEditPoll = false,
+    enablePAC = false, // ???
+    enableWaitingRoom = false, // 0, 1
+    dialInOptions = null,
+    authOptions = null,
+    enforceAuthMode = 0, // 0 (any Zoom user), 1 (Berkeley Zoom user)
+    breakoutRoomOptions = null,
+    requireRegistration = false,
+    usePersonalMeetingID = false,
+    enableMuteUponEntry = false, // 0, 1
+    regionAllowList = [],
+    regionDenyList = [],
+  } = options;
 
   if(options.enforceAuthMode === 1 && !authOptions) {
     authOptions = {
@@ -167,17 +148,17 @@ async function createMeeting(options) {
   }
   if(!when || isNaN(when.getTime())) throw new Error(`Invalid date: ${options.when}`);
   if(isNaN(options.duration)) throw new Error(`Invalid duration: ${options.duration}`);
-  let startDate = when.toLocaleDateString("en-US", {timeZone: options.timezone});
+  let startDate = when.toLocaleDateString("en-US", {timeZone: options.timeZone});
   let [startTime, startAMPM] = when.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "numeric",
-    timeZone: options.timezone,
+    timeZone: options.timeZone,
   }).split(" ");
 
   let body = new URLSearchParams();
   body.append("topic", topic);
   if(description) body.append("agenda", description);
-  body.append("timezone", timezone);
+  body.append("timezone", timeZone);
   body.append("start_date", startDate);
   body.append("start_time", startTime);
   body.append("start_time_2", startAMPM);
@@ -186,7 +167,7 @@ async function createMeeting(options) {
     body.append("option_rm", true);
     body.append("recurrence_setting", JSON.stringify({
       "type": "CLASSIC",
-      "timezone": timezone,
+      "timezone": timeZone,
     }));
   } else {
     body.append("option_rm", false);

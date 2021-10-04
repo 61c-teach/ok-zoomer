@@ -51,9 +51,7 @@ run().catch((err) => {
 async function deleteMeeting(options) {
   let {
     meetingID,
-  } = {
-    ...options,
-  };
+  } = options;
 
   let body = new URLSearchParams();
   body.append("user_id", "");
