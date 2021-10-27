@@ -204,7 +204,7 @@ async function createMeeting(options) {
 
   res = await util.request(`/meeting/${meetingID}`, options);
   data = await res.text();
-  let meetingLinkMatch = data.match(new RegExp(`href="(.+?/j/${meetingID}[^"]*)"`));
+  let meetingLinkMatch = data.match(new RegExp(`(?:href="|>)(https?:[^"<]+?/j/${meetingID}[^"<]*)(?:"|<)`));
   if(!meetingLinkMatch) throw new Error("Could not find meeting link on meeting page");
   let meetingLink = meetingLinkMatch[1];
   return {
