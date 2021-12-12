@@ -101,10 +101,18 @@ function getCookieString(path) {
 }
 module.exports.getCookieString = getCookieString;
 
+function getURL(path, options = {}) {
+  options = Object.assign({
+    zoomOrigin: DEFAULT_ZOOM_ORIGIN,
+  }, options);
+  return new URL(path, options.zoomOrigin);
+}
+module.exports.getURL = getURL;
+
 function cli(...args) {
   return yargs(hideBin(process.argv), ...args);
 }
 module.exports.cli = cli;
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const sleep = (ms) => ms ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
 module.exports.sleep = sleep;
